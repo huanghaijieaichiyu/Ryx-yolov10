@@ -1,13 +1,20 @@
 # Ultralytics YOLO 🚀, AGPL-3.0 license
 """Block modules."""
 
+import math
+from functools import partial
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from einops import rearrange
+from timm.models.efficientnet_blocks import SqueezeExcite as SE
+from timm.models.layers import DropPath
+from timm.models.layers import Swish, HardSigmoid, HardSwish, HardMish, Tanh, PReLU, GELU
 
+from ultralytics.utils.torch_utils import fuse_conv_and_bn
 from .conv import Conv, DWConv, GhostConv, LightConv, RepConv, autopad
 from .transformer import TransformerBlock
-from ultralytics.utils.torch_utils import fuse_conv_and_bn
 
 __all__ = (
     "DFL",
@@ -38,6 +45,7 @@ __all__ = (
     "CBFuse",
     "CBLinear",
     "Silence",
+    "iRMB"
 )
 
 
@@ -428,7 +436,7 @@ class MaxSigmoidAttnBlock(nn.Module):
 
         aw = torch.einsum("bmchw,bnmc->bmhwn", embed, guide)
         aw = aw.max(dim=-1)[0]
-        aw = aw / (self.hc**0.5)
+        aw = aw / (self.hc ** 0.5)
         aw = aw + self.bias[None, :, None, None]
         aw = aw.sigmoid() * self.scale
 
@@ -492,7 +500,7 @@ class ImagePoolingAttn(nn.Module):
         """Executes attention mechanism on input tensor x and guide tensor."""
         bs = x[0].shape[0]
         assert len(x) == self.nf
-        num_patches = self.k**2
+        num_patches = self.k ** 2
         x = [pool(proj(x)).view(bs, -1, num_patches) for (x, proj, pool) in zip(x, self.projections, self.im_pools)]
         x = torch.cat(x, dim=-1).transpose(1, 2)
         q = self.query(text)
@@ -505,7 +513,7 @@ class ImagePoolingAttn(nn.Module):
         v = v.reshape(bs, -1, self.nh, self.hc)
 
         aw = torch.einsum("bnmc,bkmc->bmnk", q, k)
-        aw = aw / (self.hc**0.5)
+        aw = aw / (self.hc ** 0.5)
         aw = F.softmax(aw, dim=-1)
 
         x = torch.einsum("bmnk,bkmc->bnmc", aw, v)
@@ -706,10 +714,10 @@ class RepVGGDW(torch.nn.Module):
         self.conv1 = Conv(ed, ed, 3, 1, 1, g=ed, act=False)
         self.dim = ed
         self.act = nn.SiLU()
-    
+
     def forward(self, x):
         return self.act(self.conv(x) + self.conv1(x))
-    
+
     def forward_fuse(self, x):
         return self.act(self.conv(x))
 
@@ -717,13 +725,13 @@ class RepVGGDW(torch.nn.Module):
     def fuse(self):
         conv = fuse_conv_and_bn(self.conv.conv, self.conv.bn)
         conv1 = fuse_conv_and_bn(self.conv1.conv, self.conv1.bn)
-        
+
         conv_w = conv.weight
         conv_b = conv.bias
         conv1_w = conv1.weight
         conv1_b = conv1.bias
-        
-        conv1_w = torch.nn.functional.pad(conv1_w, [2,2,2,2])
+
+        conv1_w = torch.nn.functional.pad(conv1_w, [2, 2, 2, 2])
 
         final_conv_w = conv_w + conv1_w
         final_conv_b = conv_b + conv1_b
@@ -733,6 +741,7 @@ class RepVGGDW(torch.nn.Module):
 
         self.conv = conv
         del self.conv1
+
 
 class CIB(nn.Module):
     """Standard bottleneck."""
@@ -756,6 +765,7 @@ class CIB(nn.Module):
     def forward(self, x):
         """'forward()' applies the YOLO FPN to input data."""
         return x + self.cv1(x) if self.add else self.cv1(x)
+
 
 class C2fCIB(C2f):
     """Faster Implementation of CSP Bottleneck with 2 convolutions."""
@@ -786,36 +796,39 @@ class Attention(nn.Module):
         B, C, H, W = x.shape
         N = H * W
         qkv = self.qkv(x)
-        q, k, v = qkv.view(B, self.num_heads, self.key_dim*2 + self.head_dim, N).split([self.key_dim, self.key_dim, self.head_dim], dim=2)
+        q, k, v = qkv.view(B, self.num_heads, self.key_dim * 2 + self.head_dim, N).split(
+            [self.key_dim, self.key_dim, self.head_dim], dim=2)
 
         attn = (
-            (q.transpose(-2, -1) @ k) * self.scale
+                (q.transpose(-2, -1) @ k) * self.scale
         )
         attn = attn.softmax(dim=-1)
         x = (v @ attn.transpose(-2, -1)).view(B, C, H, W) + self.pe(v.reshape(B, C, H, W))
         x = self.proj(x)
         return x
 
+
 class PSA(nn.Module):
 
     def __init__(self, c1, c2, e=0.5):
         super().__init__()
-        assert(c1 == c2)
+        assert (c1 == c2)
         self.c = int(c1 * e)
         self.cv1 = Conv(c1, 2 * self.c, 1, 1)
         self.cv2 = Conv(2 * self.c, c1, 1)
-        
+
         self.attn = Attention(self.c, attn_ratio=0.5, num_heads=self.c // 64)
         self.ffn = nn.Sequential(
-            Conv(self.c, self.c*2, 1),
-            Conv(self.c*2, self.c, 1, act=False)
+            Conv(self.c, self.c * 2, 1),
+            Conv(self.c * 2, self.c, 1, act=False)
         )
-        
+
     def forward(self, x):
         a, b = self.cv1(x).split((self.c, self.c), dim=1)
         b = b + self.attn(b)
         b = b + self.ffn(b)
         return self.cv2(torch.cat((a, b), 1))
+
 
 class SCDown(nn.Module):
     def __init__(self, c1, c2, k, s):
@@ -825,3 +838,219 @@ class SCDown(nn.Module):
 
     def forward(self, x):
         return self.cv2(self.cv1(x))
+
+
+# iRMB
+
+
+# ========== 1.LayerNorm2d类：实现对输入张量进行二维的 Layer Normalization 操作 ==========
+class LayerNorm2d(nn.Module):
+
+    def __init__(self, normalized_shape, eps=1e-6, elementwise_affine=True):
+        super().__init__()
+        self.norm = nn.LayerNorm(normalized_shape, eps, elementwise_affine)
+
+    def forward(self, x):
+        x = rearrange(x, 'b c h w -> b h w c').contiguous()
+        x = self.norm(x)
+        x = rearrange(x, 'b h w c -> b c h w').contiguous()
+        return x
+
+
+def get_norm(norm_layer='in_1d'):
+    eps = 1e-6
+    norm_dict = {
+        'none': nn.Identity,
+        'in_1d': partial(nn.InstanceNorm1d, eps=eps),
+        'in_2d': partial(nn.InstanceNorm2d, eps=eps),
+        'in_3d': partial(nn.InstanceNorm3d, eps=eps),
+        'bn_1d': partial(nn.BatchNorm1d, eps=eps),
+        'bn_2d': partial(nn.BatchNorm2d, eps=eps),
+        # 'bn_2d': partial(nn.SyncBatchNorm, eps=eps),
+        'bn_3d': partial(nn.BatchNorm3d, eps=eps),
+        'gn': partial(nn.GroupNorm, eps=eps),
+        'ln_1d': partial(nn.LayerNorm, eps=eps),
+        'ln_2d': partial(LayerNorm2d, eps=eps),
+    }
+    return norm_dict[norm_layer]
+
+
+def get_act(act_layer='relu'):
+    act_dict = {
+        'none': nn.Identity,
+        'sigmoid': nn.Sigmoid,
+        'swish': Swish,
+        'mish': nn.Mish,
+        'hsigmoid': HardSigmoid,
+        'hswish': HardSwish,
+        'hmish': HardMish,
+        'tanh': Tanh,
+        'relu': nn.ReLU,
+        'relu6': nn.ReLU6,
+        'prelu': PReLU,
+        'gelu': GELU,
+        'silu': nn.SiLU
+    }
+    return act_dict[act_layer]
+
+
+# ========== 2.ConvNormAct类：实现卷积、规范化和激活操作的集合 ==========
+class ConvNormAct(nn.Module):
+
+    def __init__(self, dim_in, dim_out, kernel_size, stride=1, dilation=1, groups=1, bias=False,
+                 skip=False, norm_layer='bn_2d', act_layer='relu', inplace=True, drop_path_rate=0.):
+        super(ConvNormAct, self).__init__()
+        self.has_skip = skip and dim_in == dim_out
+        padding = math.ceil((kernel_size - stride) / 2)
+        self.conv = nn.Conv2d(dim_in, dim_out, kernel_size, stride, padding, dilation, groups, bias)
+        self.norm = get_norm(norm_layer)(dim_out)
+        self.act = get_act(act_layer)(inplace=inplace)
+        self.drop_path = DropPath(drop_path_rate) if drop_path_rate else nn.Identity()
+
+    def forward(self, x):
+        shortcut = x
+        x = self.conv(x)
+        x = self.norm(x)
+        x = self.act(x)
+        if self.has_skip:
+            x = self.drop_path(x) + shortcut
+        return x
+
+
+# ========== 3.iRMB类：反向残差注意力机制 ==========
+class iRMB(nn.Module):
+    """
+               dim_in: 输入特征的维度。
+               dim_out: 输出特征的维度。
+               norm_in: 是否对输入进行标准化。
+               has_skip: 是否使用跳跃连接。
+               exp_ratio: 扩展比例。
+               norm_layer: 标准化层的类型。
+               act_layer: 激活函数的类型。
+               v_proj: 是否对V进行投影。
+               dw_ks: 深度可分离卷积的卷积核大小。
+               stride: 卷积的步幅。
+               dilation: 卷积的膨胀率。
+               se_ratio: SE 模块的比例。
+               dim_head: 注意力头的维度。
+               window_size: 窗口大小。
+               attn_s: 是否使用注意力机制。
+               qkv_bias: 是否在注意力机制中使用偏置。
+               attn_drop: 注意力机制中的dropout比例。
+               drop: 全连接层的dropout比例。
+               drop_path: DropPath 的比例。
+               v_group: 是否对 V 进行分组卷积。
+               attn_pre: 是否将注意力机制应用到输入之前。
+               inplace: 是否原地执行操作。
+            """
+
+    def __init__(self, dim_in, dim_out, norm_in=True, has_skip=True, exp_ratio=1.0, norm_layer='bn_2d',
+                 act_layer='relu', v_proj=True, dw_ks=3, stride=1, dilation=1, se_ratio=0.0, dim_head=64, window_size=7,
+                 attn_s=True, qkv_bias=False, attn_drop=0., drop=0., drop_path=0., v_group=False, attn_pre=False,
+                 inplace=True):
+
+        super().__init__()  # 调用父类的构造函数
+        self.norm = get_norm(norm_layer)(
+            dim_in) if norm_in else nn.Identity()  # 条件判断，返回一个标准化层（例如 BatchNorm、LayerNorm 等）或使用空操作
+        dim_mid = int(dim_in * exp_ratio)  # 计算中间维度大小
+        self.has_skip = (dim_in == dim_out and stride == 1) and has_skip  # 条件判断，是否使用跳跃连接
+        self.attn_s = attn_s  # 是否使用空间注意力机制的标志
+
+        # 如果使用注意力机制
+        if self.attn_s:
+            assert dim_in % dim_head == 0, 'dim should be divisible by num_heads'  # 确保输入维度 dim_in 可以被 dim_head 整除
+            self.dim_head = dim_head  # 设置每个头的维度为 dim_head
+            self.window_size = window_size  # 设置窗口大小
+            self.num_head = dim_in // dim_head  # 计算头数 self.num_head
+            self.scale = self.dim_head ** -0.5  # 计算缩放因子 self.scale，用于调节注意力分数
+            self.attn_pre = attn_pre  # 设定是否在注意力机制之前重新排列数据 self.attn_pre
+
+            # 创建 QK 卷积层、V 卷积层、注意力机制的 dropout 等
+            self.qk = ConvNormAct(dim_in, int(dim_in * 2), kernel_size=1, bias=qkv_bias, norm_layer='none',
+                                  act_layer='none')
+            self.v = ConvNormAct(dim_in, dim_mid, kernel_size=1, groups=self.num_head if v_group else 1, bias=qkv_bias,
+                                 norm_layer='none', act_layer=act_layer, inplace=inplace)
+            self.attn_drop = nn.Dropout(attn_drop)
+
+            # 如果不使用注意力机制
+        else:
+            # 如果需要进行 V 投影，则创建 V 卷积层；否则使用 nn.Identity() 空操作
+            if v_proj:  # 如果使用V投影
+                self.v = ConvNormAct(dim_in, dim_mid, kernel_size=1, bias=qkv_bias, norm_layer='none',
+                                     act_layer=act_layer, inplace=inplace)  # 创建V卷积层
+            else:
+                self.v = nn.Identity()  # 使用空操作
+        self.conv_local = ConvNormAct(dim_mid, dim_mid, kernel_size=dw_ks, stride=stride, dilation=dilation,
+                                      groups=dim_mid, norm_layer='bn_2d', act_layer='silu', inplace=inplace)  # 创建局部卷积层
+        self.se = SE(dim_mid, rd_ratio=se_ratio,
+                     act_layer=get_act(act_layer)) if se_ratio > 0.0 else nn.Identity()  # 创建空间激励模块或使用空操作
+
+        self.proj_drop = nn.Dropout(drop)
+        self.proj = ConvNormAct(dim_mid, dim_out, kernel_size=1, norm_layer='none', act_layer='none', inplace=inplace)
+        self.drop_path = DropPath(drop_path) if drop_path else nn.Identity()
+
+    def forward(self, x):
+        shortcut = x  # 保存输入的快捷连接
+        x = self.norm(x)  # 应用标准化层
+
+        # 提取输入 x 的形状信息
+        B, C, H, W = x.shape
+
+        if self.attn_s:  # 如果使用了注意力机制
+            # padding
+            if self.window_size <= 0:
+                window_size_W, window_size_H = W, H
+            else:
+                window_size_W, window_size_H = self.window_size, self.window_size
+            # 计算填充的大小
+            pad_l, pad_t = 0, 0
+            pad_r = (window_size_W - W % window_size_W) % window_size_W
+            pad_b = (window_size_H - H % window_size_H) % window_size_H
+            x = F.pad(x, (pad_l, pad_r, pad_t, pad_b, 0, 0,))  # 对输入进行填充
+            n1, n2 = (H + pad_b) // window_size_H, (W + pad_r) // window_size_W
+            x = rearrange(x, 'b c (h1 n1) (w1 n2) -> (b n1 n2) c h1 w1', n1=n1, n2=n2).contiguous()  # 重新排列输入数据
+
+            # attention
+            b, c, h, w = x.shape
+            qk = self.qk(x)  # 计算查询和键的表示
+            qk = rearrange(qk, 'b (qk heads dim_head) h w -> qk b heads (h w) dim_head', qk=2, heads=self.num_head,
+                           dim_head=self.dim_head).contiguous()  # 重排查询和键的表示
+            q, k = qk[0], qk[1]
+            attn_spa = (q @ k.transpose(-2, -1)) * self.scale  # 计算空间注意力矩阵
+            attn_spa = attn_spa.softmax(dim=-1)  # 对注意力矩阵进行 softmax
+            attn_spa = self.attn_drop(attn_spa)  # 应用注意力 dropout
+            if self.attn_pre:
+                x = rearrange(x, 'b (heads dim_head) h w -> b heads (h w) dim_head',
+                              heads=self.num_head).contiguous()  # 重排输入特征
+                x_spa = attn_spa @ x  # 应用注意力矩阵到输入特征
+                x_spa = rearrange(x_spa, 'b heads (h w) dim_head -> b (heads dim_head) h w', heads=self.num_head,
+                                  h=h,
+                                  w=w).contiguous()  # 重排输出特征
+                x_spa = self.v(x_spa)  # 对输出特征应用值的表示
+            else:
+                v = self.v(x)  # 计算值的表示
+                v = rearrange(v, 'b (heads dim_head) h w -> b heads (h w) dim_head',
+                              heads=self.num_head).contiguous()  # 重排值的表示
+                x_spa = attn_spa @ v  # 应用注意力矩阵到值的表示
+                x_spa = rearrange(x_spa, 'b heads (h w) dim_head -> b (heads dim_head) h w', heads=self.num_head,
+                                  h=h,
+                                  w=w).contiguous()  # 重排输出特征
+
+            # unpadding
+            x = rearrange(x_spa, '(b n1 n2) c h1 w1 -> b c (h1 n1) (w1 n2)', n1=n1, n2=n2).contiguous()  # 重新排列输出特征
+            if pad_r > 0 or pad_b > 0:
+                x = x[:, :, :H, :W].contiguous()  # 移除填充部分
+
+        else:  # 如果不使用注意力机制
+            x = self.v(x)  # 计算值的表示
+
+        # 应用空间激励模块和局部卷积层
+        x = x + self.se(self.conv_local(x)) if self.has_skip else self.se(self.conv_local(x))
+
+        # 应用输出投影的 dropout
+        x = self.proj_drop(x)  # 应用 dropout
+        x = self.proj(x)  # 应用输出投影
+
+        # 添加快捷连接并应用路径丢弃
+        x = (shortcut + self.drop_path(x)) if self.has_skip else x  # 添加快捷连接并应用路径丢弃
+        return x  # 返回处理后的结果
