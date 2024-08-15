@@ -72,7 +72,19 @@ class BboxLoss(nn.Module):
     def forward(self, pred_dist, pred_bboxes, anchor_points, target_bboxes, target_scores, target_scores_sum, fg_mask):
         """IoU loss."""
         weight = target_scores.sum(-1)[fg_mask].unsqueeze(-1)
-        iou = bbox_iou(pred_bboxes[fg_mask], target_bboxes[fg_mask], xywh=False, CIoU=True)
+        lbox = torch.zeros(1, device=pred_dist.device)
+        iou = bbox_iou(pred_bboxes[fg_mask], target_bboxes[fg_mask], xywh=False, CIoU=True, DIoU=False, EIoU=False,
+                       MPDIoU=False, WIoU=False, GIoU=False, Focal=False)
+        if type(iou) is tuple:
+            if len(iou) == 2:
+                lbox += (iou[1].detach().squeeze() * (1 - iou[0].squeeze())).mean()
+                iou = iou[0].squeeze()
+            else:
+                lbox += (iou[0] * iou[1]).mean()
+                iou = iou[2].squeeze()
+        else:
+            lbox += (1.0 - iou.squeeze()).mean()  # iou loss
+            iou = iou.squeeze()
         loss_iou = ((1.0 - iou) * weight).sum() / target_scores_sum
 
         # DFL loss
