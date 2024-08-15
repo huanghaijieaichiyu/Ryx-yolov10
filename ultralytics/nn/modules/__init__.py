@@ -49,7 +49,7 @@ from .block import (
     PSA,
     C2fCIB,
     SCDown,
-    RepVGGDW, iRMB
+    RepVGGDW, iRMB, DNConv
 )
 from .conv import (
     CBAM,
@@ -144,5 +144,6 @@ __all__ = (
     "SCDown",
     "RepVGGDW",
     "v10Detect",
-    "iRMB"
+    "iRMB",
+    "DNConv"
 )

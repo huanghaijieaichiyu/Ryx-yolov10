@@ -45,7 +45,8 @@ __all__ = (
     "CBFuse",
     "CBLinear",
     "Silence",
-    "iRMB"
+    "iRMB",
+    "DNConv"
 )
 
 
@@ -835,6 +836,17 @@ class SCDown(nn.Module):
         super().__init__()
         self.cv1 = Conv(c1, c2, 1, 1)
         self.cv2 = Conv(c2, c2, k=k, s=s, g=c2, act=False)
+
+    def forward(self, x):
+        return self.cv2(self.cv1(x))
+
+
+# Conv_down
+class DNConv(nn.Module):
+    def __init__(self, c1, c2, k, s=1):
+        super().__init__()
+        self.cv1 = Conv(c1, c2, k, s, act=False)
+        self.cv2 = Conv(c2, c2, 1, 1, g=1)
 
     def forward(self, x):
         return self.cv2(self.cv1(x))
