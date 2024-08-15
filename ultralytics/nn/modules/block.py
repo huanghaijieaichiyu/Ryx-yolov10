@@ -13,7 +13,7 @@ from timm.models.layers import DropPath
 from timm.models.layers import Swish, HardSigmoid, HardSwish, HardMish, Tanh, PReLU, GELU
 
 from ultralytics.utils.torch_utils import fuse_conv_and_bn
-from .conv import Conv, DWConv, GhostConv, LightConv, RepConv, autopad
+from .conv import Conv, DWConv, GhostConv, LightConv, RepConv, autopad, CBAM
 from .transformer import TransformerBlock
 
 __all__ = (
@@ -46,7 +46,8 @@ __all__ = (
     "CBLinear",
     "Silence",
     "iRMB",
-    "DNConv"
+    "DNConv",
+    "CMB"
 )
 
 
@@ -845,12 +846,91 @@ class SCDown(nn.Module):
 class DNConv(nn.Module):
     def __init__(self, c1, c2, k, s=1):
         super().__init__()
-        self.cv1 = Conv(c1, c2, k, s, act=False)
-        self.cv2 = Conv(c2, c2, 1, 1, g=1)
+        self.cv1 = Conv(c1, c2, k, s, g=c1, act=False)
+        self.cv2 = Conv(c2, c2, 1, 1)
 
     def forward(self, x):
         return self.cv2(self.cv1(x))
 
+
+# EMA
+class EMA(nn.Module):
+    def __init__(self, channels, factor=8):
+        super().__init__()
+        self.groups = factor  # 分组因子
+        assert channels // self.groups > 0
+        self.softmax = nn.Softmax(-1)  # softmax操作
+        self.agp = nn.AdaptiveAvgPool2d((1, 1))  # 1×1平均池化层
+        self.pool_h = nn.AdaptiveAvgPool2d((None, 1))  # X平均池化层 h=1
+        self.pool_w = nn.AdaptiveAvgPool2d((1, None))  # Y平均池化层 w=1
+        self.gn = nn.GroupNorm(channels // self.groups, channels // self.groups)  # 分组操作
+        self.conv1x1 = nn.Conv2d(channels // self.groups, channels // self.groups, kernel_size=1, stride=1,
+                                 padding=0)  # 1×1卷积分支
+        self.conv3x3 = nn.Conv2d(channels // self.groups, channels // self.groups, kernel_size=3, stride=1,
+                                 padding=1)  # 3×3卷积分支
+
+    def forward(self, x):
+        b, c, h, w = x.size()
+        group_x = x.reshape(b * self.groups, -1, h, w)  # b*g,c//g,h,w
+        x_h = self.pool_h(group_x)  # 得到平均池化之后的h
+        x_w = self.pool_w(group_x).permute(0, 1, 3, 2)  # 得到平均池化之后的w
+        hw = self.conv1x1(torch.cat([x_h, x_w], dim=2))  # 先拼接，然后送入1×1卷积
+        x_h, x_w = torch.split(hw, [h, w], dim=2)
+        x1 = self.gn(group_x * x_h.sigmoid() * x_w.permute(0, 1, 3, 2).sigmoid())
+        x2 = self.conv3x3(group_x)  # 3×3卷积分支
+        x11 = self.softmax(self.agp(x1).reshape(b * self.groups, -1, 1).permute(0, 2, 1))
+        x12 = x2.reshape(b * self.groups, c // self.groups, -1)  # b*g, c//g, hw
+        x21 = self.softmax(self.agp(x2).reshape(b * self.groups, -1, 1).permute(0, 2, 1))
+        x22 = x1.reshape(b * self.groups, c // self.groups, -1)  # b*g, c//g, hw
+        weights = (torch.matmul(x11, x12) + torch.matmul(x21, x22)).reshape(b * self.groups, 1, h, w)
+        return (group_x * weights.sigmoid()).reshape(b, c, h, w)
+
+
+# SimAM
+class SimAM(torch.nn.Module):
+    def __init__(self, channels=None, out_channels=None, e_lambda=1e-4):
+        super().__init__()
+
+        self.act = nn.SiLU()
+        self.e_lambda = e_lambda
+
+    def __repr__(self):
+        s = self.__class__.__name__ + '('
+        s += ('lambda=%f)' % self.e_lambda)
+        return s
+
+    @staticmethod
+    def get_module_name():
+        return "simam"
+
+    def forward(self, x):
+        b, c, h, w = x.size()
+
+        n = w * h - 1
+
+        x_minus_mu_square = (x - x.mean(dim=[2, 3], keepdim=True)).pow(2)
+        y = x_minus_mu_square / (4 * (x_minus_mu_square.sum(dim=[2, 3], keepdim=True) / n + self.e_lambda)) + 0.5
+
+        return x * self.act(y)
+
+class CMB(nn.Module):
+    def __init__(self, c1, c2, e=0.5):
+        super().__init__()
+        assert (c1 == c2)
+        self.c = int(c1 * e)
+        self.cv1 = Conv(c1, 2 * self.c, 1, 1)
+        self.cv2 = Conv(2 * self.c, c1, 1)
+        self.attn = SimAM(self.c)
+        self.ffn = nn.Sequential(
+            Conv(self.c, self.c * 2, 1),
+            Conv(self.c * 2, self.c, 1, act=False)
+        )
+
+    def forward(self, x):
+        a, b = self.cv1(x).split((self.c, self.c), dim=1)
+        b = b + self.attn(b)
+        b = b + self.ffn(b)
+        return self.cv2(torch.cat((a, b), 1))
 
 # iRMB
 
