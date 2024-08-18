@@ -47,7 +47,9 @@ __all__ = (
     "Silence",
     "iRMB",
     "DNConv",
-    "CMB"
+    "CMB",
+    "LSKblock",
+    "EMA"
 )
 
 
@@ -846,8 +848,8 @@ class SCDown(nn.Module):
 class DNConv(nn.Module):
     def __init__(self, c1, c2, k, s=1):
         super().__init__()
-        self.cv1 = Conv(c1, c2, k, s, g=c1, act=False)
-        self.cv2 = Conv(c2, c2, 1, 1)
+        self.cv1 = Conv(c1, c2, k, s, g=c1)
+        self.cv2 = LSKblock(c2)
 
     def forward(self, x):
         return self.cv2(self.cv1(x))
@@ -913,6 +915,48 @@ class SimAM(torch.nn.Module):
 
         return x * self.act(y)
 
+
+# LSKNet
+class LSKblock(nn.Module):
+    def __init__(self, dim):
+        super().__init__()
+        # 一个5x5的卷积层，groups=dim 表示使用分组卷积，其中 dim 是输入通道数。
+        self.conv0 = nn.Conv2d(dim, dim, 5, padding=2, groups=dim)
+        # 一个7x7的卷积层，使用了步幅1、padding为9、groups=dim 表示分组卷积、dilation=3 表示膨胀卷积。
+        self.conv_spatial = nn.Conv2d(dim, dim, 7, stride=1, padding=9, groups=dim, dilation=3)
+        # 一个1x1的卷积层，将 dim 通道减半。
+        self.conv1 = nn.Conv2d(dim, dim // 2, 1)
+        # 一个1x1的卷积层，将 dim 通道减半。
+        self.conv2 = nn.Conv2d(dim, dim // 2, 1)
+        # 一个7x7的卷积层，padding为3，用于对两个路径的信息进行压缩。
+        self.conv_squeeze = nn.Conv2d(2, 2, 7, padding=3)
+        # 一个1x1的卷积层，将 dim//2 通道的信息还原为 dim。
+        self.conv = nn.Conv2d(dim // 2, dim, 1)
+
+    def forward(self, x):
+        # 使用 self.conv0 和 self.conv_spatial 对输入特征图进行不同的卷积操作，得到 attn1 和 attn2。
+        attn1 = self.conv0(x)
+        attn2 = self.conv_spatial(attn1)
+        # 使用 self.conv1 和 self.conv2 对 attn1 和 attn2 进行进一步的卷积操作。
+        attn1 = self.conv1(attn1)
+        attn2 = self.conv2(attn2)
+
+        # 将 attn1 和 attn2 沿着通道维度拼接在一起，得到 attn。
+        attn = torch.cat([attn1, attn2], dim=1)
+        # 计算 attn 在通道维度上的平均值和最大值，得到 avg_attn 和 max_attn。
+        avg_attn = torch.mean(attn, dim=1, keepdim=True)
+        max_attn, _ = torch.max(attn, dim=1, keepdim=True)
+        # 将 avg_attn 和 max_attn 沿着通道维度拼接在一起，得到 agg。
+        agg = torch.cat([avg_attn, max_attn], dim=1)
+        # 对 agg 进行压缩，通过 self.conv_squeeze 进行sigmoid激活，得到注意力权重 sig。
+        sig = self.conv_squeeze(agg).sigmoid()
+        # 使用 sig 对 attn1 和 attn2 进行加权融合，得到最终的注意力结果 attn。
+        attn = attn1 * sig[:, 0, :, :].unsqueeze(1) + attn2 * sig[:, 1, :, :].unsqueeze(1)
+        # 将 attn 经过 self.conv 进行进一步处理，得到最终的输出，返回 x * attn。
+        attn = self.conv(attn)
+        return x * attn
+
+
 class CMB(nn.Module):
     def __init__(self, c1, c2, e=0.5):
         super().__init__()
@@ -920,7 +964,7 @@ class CMB(nn.Module):
         self.c = int(c1 * e)
         self.cv1 = Conv(c1, 2 * self.c, 1, 1)
         self.cv2 = Conv(2 * self.c, c1, 1)
-        self.attn = SimAM(self.c)
+        self.attn = EMA(self.c  )
         self.ffn = nn.Sequential(
             Conv(self.c, self.c * 2, 1),
             Conv(self.c * 2, self.c, 1, act=False)
@@ -931,6 +975,7 @@ class CMB(nn.Module):
         b = b + self.attn(b)
         b = b + self.ffn(b)
         return self.cv2(torch.cat((a, b), 1))
+
 
 # iRMB
 
