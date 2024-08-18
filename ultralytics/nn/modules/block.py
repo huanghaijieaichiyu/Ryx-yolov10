@@ -848,7 +848,7 @@ class SCDown(nn.Module):
 class DNConv(nn.Module):
     def __init__(self, c1, c2, k, s=1):
         super().__init__()
-        self.cv1 = Conv(c1, c2, k, s, g=c1)
+        self.cv1 = Conv(c1, c2, k, s, g=c1, act=False)
         self.cv2 = LSKblock(c2)
 
     def forward(self, x):
@@ -964,7 +964,7 @@ class CMB(nn.Module):
         self.c = int(c1 * e)
         self.cv1 = Conv(c1, 2 * self.c, 1, 1)
         self.cv2 = Conv(2 * self.c, c1, 1)
-        self.attn = EMA(self.c  )
+        self.attn = Attention(self.c, attn_ratio=0.5, num_heads=self.c // 64)
         self.ffn = nn.Sequential(
             Conv(self.c, self.c * 2, 1),
             Conv(self.c * 2, self.c, 1, act=False)
