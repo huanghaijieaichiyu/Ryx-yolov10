@@ -5,7 +5,7 @@ A fork copy from the Official PyTorch implementation of [YOLOv10: Real-Time End-
 
 
 ## Performance
-COCO
+KITTI
 
 | Model                                                    | Test Size | #Params | FLOPs | AP<sup>val</sup> | Latency |
 |:---------------------------------------------------------|:----:|:---:|:--:|:--:|:--:|
