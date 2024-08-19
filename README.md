@@ -7,19 +7,18 @@ A fork copy from the Official PyTorch implementation of [YOLOv10: Real-Time End-
 ## Performance
 COCO
 
-| Model | Test Size | #Params | FLOPs | AP<sup>val</sup> | Latency |
-|:---------------|:----:|:---:|:--:|:--:|:--:|
-| [YOLOv10-N](https://huggingface.co/jameslahm/yolov10n) |   640  |     2.3M    |   6.7G   |     38.5%     | 1.84ms |
-| [YOLOv10-S](https://huggingface.co/jameslahm/yolov10s) |   640  |     7.2M    |   21.6G  |     46.3%     | 2.49ms |
-| [YOLOv10-M](https://huggingface.co/jameslahm/yolov10m) |   640  |     15.4M   |   59.1G  |     51.1%     | 4.74ms |
-| [YOLOv10-B](https://huggingface.co/jameslahm/yolov10b) |   640  |     19.1M   |  92.0G |     52.5%     | 5.74ms |
-| [YOLOv10-L](https://huggingface.co/jameslahm/yolov10l) |   640  |     24.4M   |  120.3G   |     53.2%     | 7.28ms |
-| [YOLOv10-X](https://huggingface.co/jameslahm/yolov10x) |   640  |     29.5M    |   160.4G   |     54.4%     | 10.70ms |
+| Model                                                    | Test Size | #Params | FLOPs | AP<sup>val</sup> | Latency |
+|:---------------------------------------------------------|:----:|:---:|:--:|:--:|:--:|
+| [YOLOv10-N](https://huggingface.co/jameslahm/yolov10n)   |   640  |     2.3M    |   6.7G   |     38.5%     | 1.84ms |
+| [Modle 1](https://huggingface.co/jameslahm/yolov10s)     |   640  |     7.2M    |   21.6G  |     46.3%     | 2.49ms |
+| [Modle 2](https://huggingface.co/jameslahm/yolov10m)     |   640  |     15.4M   |   59.1G  |     51.1%     | 4.74ms |
+| [Modle 3](https://huggingface.co/jameslahm/yolov10b)     |   640  |     19.1M   |  92.0G |     52.5%     | 5.74ms |
+| [LSK-YOLOv10](https://huggingface.co/jameslahm/yolov10l) |   640  |     24.4M   |  120.3G   |     53.2%     | 7.28ms |
 
 ## Installation
 `conda` virtual environment is recommended. 
 ```
-conda create -n yolov10 python=3.9
+conda create -n yolov10 python=3.10.11
 conda activate yolov10
 pip install -r requirements.txt
 pip install -e .
