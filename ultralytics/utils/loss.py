@@ -74,7 +74,7 @@ class BboxLoss(nn.Module):
         weight = target_scores.sum(-1)[fg_mask].unsqueeze(-1)
         lbox = torch.zeros(1, device=pred_dist.device)
         iou = bbox_iou(pred_bboxes[fg_mask], target_bboxes[fg_mask], xywh=False, CIoU=True, DIoU=False, EIoU=False,
-                       MPDIoU=False, WIoU=False, GIoU=False, Focal=False)
+                       MPDIoU=False, WIoU=False, GIoU=False, Focal=False, scale=False)
         if type(iou) is tuple:
             if len(iou) == 2:
                 lbox += (iou[1].detach().squeeze() * (1 - iou[0].squeeze())).mean()
