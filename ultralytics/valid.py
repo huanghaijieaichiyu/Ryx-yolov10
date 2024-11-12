@@ -12,8 +12,7 @@ if __name__ == '__main__':
         video_output, fourcc, 24, (480, 640))
 
     # model = YOLOv10(config+'.yaml')
-    model = YOLOv10(
-        'yolov8n.pt')
+    model = YOLOv10('yolov8n.pt')
     while cap.isOpened():
         # Read a frame from the video
         success, frame = cap.read()
@@ -21,8 +20,9 @@ if __name__ == '__main__':
             # Run YOLOv8 tracking on the frame, persisting tracks between frames
             results = model.track(frame, persist=True, conf=0.3,
                                   tracker="bytetrack.yaml")
-            cv2.imshow("YOLOv8 Tracking", results[0].plot())
             video.write(results[0].plot())
+            cv2.imshow("YOLOv8 Tracking", results[0].plot())
+
             # Break the loop if 'q' is pressed
             if cv2.waitKey(1) == 27:
                 break
