@@ -4,22 +4,24 @@ from tqdm import tqdm
 
 
 def vedio_writer(
-        img_folder='./runs/prediction/train'):
+        img_folder='runs/vedio'):
 
     # 图片文件夹路径
     image_folder = img_folder
     # 视频输出路径
     path = 'runs/pred'
+
+    os.mkdir(path)
     video_output = os.path.join(path, 'result.avi')
     fourcc = cv2.VideoWriter_fourcc('X', 'V', 'I', 'D')
     # 图片文件名列表
     images = os.listdir(image_folder)
-    images.sort()  # 不排序会乱
+    # images.sort()  # 不排序会乱
     # 假设所有图片尺寸相同，这里我们只读取第一张图片的尺寸
     frame = cv2.imread(os.path.join(image_folder, images[0]))
     height, width, layers = frame.shape
     video = cv2.VideoWriter(
-        video_output, fourcc, 24, (width, height))
+        video_output, fourcc, 20, (width, height))
     pbar = tqdm(images, total=len(
         images), colour='#8762A5', ncols=200)
     # 将图片逐一写入视频
@@ -42,4 +44,4 @@ def vedio_writer(
 
 
 if __name__ == '__main__':
-    vedio_writer('/home/huang/datasets/nuscenes/samples/CAM_FRONT')
+    vedio_writer()
