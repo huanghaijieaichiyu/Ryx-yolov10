@@ -1,33 +1,34 @@
 from datetime import datetime
-
-import torch
-
 from ultralytics import YOLOv10
-
-
+import cv2
+import os
 if __name__ == '__main__':
     # init
-    time = datetime.now().strftime('%y-%m-%d_%H-%M-%S')
-    config = 'valid'
-    datasets = 'KITTI'
-    optimizer = 'AdamW'
-    lr = 1e-3
-    epochs = 100
-    seed = 1999
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    video_path = '/home/huang/lift-splat-shoot/runs/prediction/vedio/lls.avi'
+    video_output = os.path.join('runs', 'result.avi')
+    cap = cv2.VideoCapture(video_path)
+    fourcc = cv2.VideoWriter_fourcc('X', 'V', 'I', 'D')
+    video = cv2.VideoWriter(
+        video_output, fourcc, 24, (480, 640))
 
     # model = YOLOv10(config+'.yaml')
-    model = YOLOv10('/home/huang/Ryx-yolov10/runs/detect/iRMB_KITTI_CIoU_24-08-19_11-05-38/weights/best.pt')
-    model.val(
-        data=datasets+'.yaml',
-        resume=True,
-        optimizer=optimizer,
-        lr0=lr,
-        epochs=epochs,
-        seed=seed,
-        dnn=True,
-        name=config+'_'+datasets+'_'+time,
-        device=device,
-        visualize=False
-    )
+    model = YOLOv10(
+        'yolov8n.pt')
+    while cap.isOpened():
+        # Read a frame from the video
+        success, frame = cap.read()
+        if success:
+            # Run YOLOv8 tracking on the frame, persisting tracks between frames
+            results = model.track(frame, persist=True, conf=0.3,
+                                  tracker="bytetrack.yaml")
+            cv2.imshow("YOLOv8 Tracking", results[0].plot())
+            video.write(results[0].plot())
+            # Break the loop if 'q' is pressed
+            if cv2.waitKey(1) == 27:
+                break
+        else:
+            break
+
+    cap.release
+    video.release
     #  model.export()
